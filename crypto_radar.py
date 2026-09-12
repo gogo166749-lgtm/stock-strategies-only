@@ -194,6 +194,7 @@ def scan():
     headers = {'User-Agent':'crypto-radar/1.0'}
     if os.getenv('COINGECKO_DEMO_API_KEY'):
         headers['x-cg-demo-api-key'] = os.environ['COINGECKO_DEMO_API_KEY']
+    print('Fetching CoinGecko market-cap rankings', flush=True)
     coins = get(CG+'/coins/markets', dict(vs_currency='usd', order='market_cap_desc',
                 per_page=250, page=1, sparkline='false'), headers)
     if not isinstance(coins, list):
@@ -202,6 +203,7 @@ def scan():
     if {x['market_cap_rank'] for x in top} != set(range(1, 201)):
         raise ValueError('未取得完整 Top 200 排名，停止產生訊號')
     counts = Counter(x['symbol'].upper() for x in coins)
+    print('Fetching OKX instruments', flush=True)
     instruments = {x['instId']:x for x in okx('public/instruments', instType='SWAP')
                    if x['state']=='live' and x.get('settleCcy')=='USDT' and x.get('ctType')=='linear'}
     try:
@@ -323,7 +325,9 @@ def main():
         (out/'latest.txt').write_text(message, encoding='utf-8')
     except Exception as exc:
         message = '加密貨幣雷達：本次資料取得或驗證失敗，未產生交易訊號。請查看 GitHub Actions。'
-        (out/'error.txt').write_text(type(exc).__name__, encoding='utf-8')
+        reason = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
+        print('Data validation error: ' + reason, flush=True)
+        (out/'error.txt').write_text(reason, encoding='utf-8')
         if args.send:
             send(message)
         print(message)
