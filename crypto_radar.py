@@ -12,7 +12,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-OKX = 'https://www.okx.com'
 CG = 'https://api.coingecko.com/api/v3'
 HOUR = 3_600_000
 
@@ -33,11 +32,20 @@ def get(url, params=None, headers=None):
     raise RuntimeError('API 暫時無法取得資料')
 
 
-def okx(path, **params):
-    data = get(OKX + '/api/v5/' + path, params)
-    if data.get('code') != '0':
-        raise RuntimeError('OKX API 回傳錯誤')
+def kucoin(path, **params):
+    data = get('https://api-futures.kucoin.com/api/v1/' + path, params)
+    if data.get('code') != '200000':
+        raise RuntimeError('KuCoin API 回傳錯誤')
     return data['data']
+
+
+def kucoin_candles(inst, hours, now):
+    rows = kucoin('kline/query', symbol=inst, granularity=hours*60,
+                  **{'from': now-151*hours*HOUR, 'to': now})
+    # Public API has no confirm field: exclude current interval plus 10 seconds.
+    normalized = [[str(x[0]), *map(str,x[1:6]), '0', str(x[6]), '1']
+                  for x in rows if int(x[0])+hours*HOUR <= now-10_000]
+    return candles(normalized, hours, now)
 
 
 def num(value):
@@ -203,20 +211,25 @@ def scan():
     if {x['market_cap_rank'] for x in top} != set(range(1, 201)):
         raise ValueError('未取得完整 Top 200 排名，停止產生訊號')
     counts = Counter(x['symbol'].upper() for x in coins)
-    print('Fetching OKX instruments', flush=True)
-    instruments = {x['instId']:x for x in okx('public/instruments', instType='SWAP')
-                   if x['state']=='live' and x.get('settleCcy')=='USDT' and x.get('ctType')=='linear'}
-    try:
-        oi = {x['instId']:x for x in okx('public/open-interest', instType='SWAP')}
-    except Exception:
-        oi = {}
+    print('Fetching KuCoin instruments', flush=True)
+    contracts = kucoin('contracts/active')
+    instruments = {}
+    for x in contracts:
+        if x.get('status') != 'Open' or x.get('settleCurrency') != 'USDT' or x.get('isInverse') or x.get('expireDate'):
+            continue
+        base = 'BTC' if x['baseCurrency'] == 'XBT' else x['baseCurrency']
+        if base in instruments:
+            instruments[base] = None  # ambiguous contract mapping
+        else:
+            instruments[base] = x
     skipped, candidates, audit = Counter(), [], []
     analyzed = matched = 0
     for coin in top:
         print(f"Scanning rank {coin['market_cap_rank']}/200", flush=True)
         sym = coin['symbol'].upper()
-        inst = sym+'-USDT-SWAP'
-        if counts[sym] != 1 or inst not in instruments:
+        contract = instruments.get(sym)
+        inst = contract['symbol'] if contract else ''
+        if counts[sym] != 1 or not contract:
             skipped['無對應永續合約或代號重複'] += 1
             continue
         matched += 1
@@ -227,13 +240,13 @@ def scan():
             if num(coin['total_volume']) < 20_000_000:
                 skipped['全市場成交量不足'] += 1
                 continue
-            c = candles(okx('market/candles', instId=inst, bar='1H', limit=150), 1, now)
+            c = kucoin_candles(inst, 1, now)
             if sum(x['v'] for x in c[-24:]) < 10_000_000:
-                skipped['OKX 24小時成交量不足'] += 1
+                skipped['KuCoin 24小時成交量不足'] += 1
                 continue
             if abs(c[-1]['c']/num(coin['current_price'])-1) > .10:
                 raise ValueError('跨來源價格差異過大，代號映射待確認')
-            h = candles(okx('market/candles', instId=inst, bar='4H', limit=150), 4, now)
+            h = kucoin_candles(inst, 4, now)
             analyzed += 1
             plan = analyze(c, h)
             if plan is None:
@@ -243,36 +256,34 @@ def scan():
             plan.update(symbol=sym, instrument=inst, coin_id=coin['id'], rank=coin['market_cap_rank'],
                         funding=None, oi_usd=None)
             try:
-                f = okx('public/funding-rate', instId=inst)[0]
-                if 0 <= now-int(f['ts']) <= HOUR:
-                    plan['funding'] = num(f['fundingRate'])*100
-                    # Normalize to hourly funding when the next interval is available.
-                    interval = (int(f['nextFundingTime'])-int(f['fundingTime']))/HOUR
-                    if interval > 0 and plan['direction']*plan['funding']/interval > .01:
-                        plan['score'] -= 10
-            except Exception:
+                plan['funding'] = num(contract['fundingFeeRate'])*100
+                interval = num(contract['currentFundingRateGranularity'])/HOUR
+                if interval > 0 and plan['direction']*plan['funding']/interval > .01:
+                    plan['score'] -= 10
+            except (KeyError, ValueError, TypeError):
                 pass
-            o = oi.get(inst)
-            if o and 0 <= now-int(o['ts']) <= HOUR:
-                plan['oi_usd'] = num(o['oiUsd'])
+            try:
+                plan['oi_usd'] = num(contract['openInterest'])*num(contract['multiplier'])*num(contract['markPrice'])
+            except (KeyError, ValueError, TypeError):
+                pass
             candidates.append(plan)
             audit.append(dict(id=coin['id'], instrument=inst, status='candidate'))
         except Exception as exc:
             skipped['資料錯誤或不足'] += 1
-            audit.append(dict(id=coin['id'], instrument=inst, status='data_error', error=type(exc).__name__))
-        time.sleep(.15)
+            audit.append(dict(id=coin['id'], instrument=inst, status='data_error', error=str(exc) if isinstance(exc, (ValueError, RuntimeError)) else type(exc).__name__))
+        time.sleep(.3)
     if analyzed == 0:
         raise ValueError('沒有可完成分析的合約，停止產生訊號')
     return dict(time=now, universe=200, matched=matched, analyzed=analyzed,
                 skipped=dict(skipped), candidates=pick(candidates), audit=audit,
-                note='規則式候選，非勝率；未回測。僅涵蓋 OKX USDT 永續合約。')
+                note='規則式候選，非勝率；未回測。僅涵蓋 KuCoin USDT 永續合約。')
 
 
 def report(r):
     stamp = datetime.fromtimestamp(r['time']/1000, timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M')
     lines = [f'加密貨幣多空雷達｜{stamp} 台灣時間',
              f"市值 Top {r['universe']}｜對應合約 {r['matched']}｜完成分析 {r['analyzed']}",
-             'CoinGecko 排名＋OKX 1H／4H 已收線資料；價位單位 USDT。',
+             'CoinGecko 排名＋KuCoin 1H／4H 已收線資料；價位單位 USDT。',
              '條件式回踩觀察，不是立即下單訊號。評分不是勝率。']
     for i, x in enumerate(r['candidates'], 1):
         d = '多' if x['direction']==1 else '空'
@@ -286,7 +297,7 @@ def report(r):
                   '最近一根掃前20根流動性並收回：'+('有' if x['sweep'] else '未見'),
                   f"假設區間中點進場 {x['entry']:.8g}｜失效 {x['stop']:.8g}｜2R參考 {x['target']:.8g}",
                   '觸區後需等低週期同向收線突破再評估；實際進場須重算風報比，失效則取消。',
-                  f'資金費率 {funding}｜OKX 持倉量 {oi}（快照，非增減）']
+                  f'資金費率 {funding}｜KuCoin 持倉量 {oi}（快照，非增減）']
     if not r['candidates']:
         lines.append('\n本次沒有符合條件的候選，不湊單。')
     for d, label in ((1,'多'),(-1,'空')):
