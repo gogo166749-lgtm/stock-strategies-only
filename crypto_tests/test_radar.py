@@ -70,6 +70,14 @@ class RadarTests(unittest.TestCase):
         self.assertIn(-1,[x['direction'] for x in selected])
         self.assertEqual(r.pick([]),[])
 
+    def test_kucoin_closed_candles_and_quote_volume(self):
+        rows=[[i*r.HOUR,100,102,98,100,999,12345] for i in range(101)]
+        with patch.object(r,'kucoin',return_value=rows):
+            result=r.kucoin_candles('XBTUSDTM',1,100*r.HOUR+20000)
+        self.assertEqual(len(result),100)
+        self.assertEqual(result[-1]['v'],12345)
+        self.assertEqual(result[-1]['c'],100)
+
     def test_invalid_numeric(self):
         for x in ('nan','inf','-inf'):
             with self.assertRaises(ValueError): r.num(x)
