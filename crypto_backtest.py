@@ -15,8 +15,8 @@ SLIP = .0002  # hypothetical adverse fill adjustment
 
 def history(symbol, start, end, output):
     found = {}
-    for lo in range(start, end, 450*H):
-        hi = min(end, lo+450*H)
+    for lo in range(start, end, 180*H):
+        hi = min(end, lo+180*H)
         rows = radar.kucoin('kline/query', symbol=symbol, granularity=60,
                            **{'from':lo-H, 'to':hi+H})
         for row in rows:
