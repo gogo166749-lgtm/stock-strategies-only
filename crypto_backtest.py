@@ -18,7 +18,7 @@ def history(symbol, start, end, output):
     for lo in range(start, end, 450*H):
         hi = min(end, lo+450*H)
         rows = radar.kucoin('kline/query', symbol=symbol, granularity=60,
-                           **{'from':lo, 'to':hi-1})
+                           **{'from':lo-H, 'to':hi+H})
         for row in rows:
             t = int(row[0])
             if start <= t < end:
@@ -26,6 +26,8 @@ def history(symbol, start, end, output):
         time.sleep(.3)
     raw = [found[t] for t in sorted(found)]
     (output/f'{symbol}_ohlcv.json').write_text(json.dumps(raw))
+    gaps=[(a[0],b[0]) for a,b in zip(raw,raw[1:]) if b[0]-a[0]!=H]
+    print(f'{symbol}: bars={len(raw)}, gaps={gaps[:5]}',flush=True)
     normalized = [[str(x[0]), *map(str,x[1:6]), '0', str(x[6]), '1'] for x in raw]
     cs = radar.candles(normalized,1,end)
     if cs[0]['t'] != start or cs[-1]['t'] != end-H or len(cs) != (end-start)//H:
@@ -37,7 +39,7 @@ def funding_history(symbol, start, end, output):
     found = {}
     for lo in range(start-8*H, end, 3*24*H):
         rows = radar.kucoin('contract/funding-rates', symbol=symbol,
-                           **{'from':lo, 'to':min(end,lo+3*24*H)-1})
+                           **{'from':lo-8*H, 'to':min(end,lo+3*24*H)+8*H})
         for x in rows:
             t=int(x['timepoint'])
             if start-8*H <= t < end:
