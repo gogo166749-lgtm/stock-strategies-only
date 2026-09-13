@@ -1,0 +1,31 @@
+name: Crypto Confirmation Research
+on:
+  workflow_dispatch:
+  push:
+    branches: [crypto-confirmation]
+    paths: [crypto_confirmation.py, confirmation_tests/**, .github/workflows/crypto-confirmation.yml]
+permissions:
+  contents: read
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m unittest discover -s crypto_tests -v
+      - run: python -m unittest discover -s backtest_tests -v
+      - run: python -m unittest discover -s confirmation_tests -v
+      - run: python crypto_confirmation.py
+      - name: Keep data and report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crypto-confirmation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: confirmation_output/
+          retention-days: 90
+      - name: Display report
+        if: always()
+        run: cat confirmation_output/REPORT.md >> "$GITHUB_STEP_SUMMARY"
