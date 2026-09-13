@@ -1,0 +1,39 @@
+name: Crypto Radar
+on:
+  workflow_dispatch:
+  push:
+    branches: [crypto-radar]
+    paths: [crypto_radar.py, crypto_tests/**, .github/workflows/crypto-radar.yml]
+  schedule:
+    # Taiwan 08:00 and 18:00, including weekends. GitHub may delay runs.
+    - cron: '0 0,10 * * *'
+permissions:
+  contents: read
+concurrency:
+  group: crypto-radar
+  cancel-in-progress: false
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify signal rules
+        run: python -m unittest discover -s crypto_tests -v
+      - name: Scan and notify
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          COINGECKO_DEMO_API_KEY: ${{ secrets.COINGECKO_DEMO_API_KEY }}
+        run: python crypto_radar.py --send
+      - name: Save scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crypto-radar-${{ github.run_id }}-${{ github.run_attempt }}
+          path: crypto_output/
+          retention-days: 30
+          if-no-files-found: ignore
