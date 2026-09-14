@@ -1,0 +1,29 @@
+name: Crypto Backtest Pilot
+on:
+  workflow_dispatch:
+  push:
+    branches: [crypto-backtest]
+    paths: [crypto_backtest.py, backtest_tests/**, .github/workflows/crypto-backtest.yml]
+permissions:
+  contents: read
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m unittest discover -s backtest_tests -v
+      - run: python crypto_backtest.py
+      - name: Keep data and report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crypto-backtest-${{ github.run_id }}-${{ github.run_attempt }}
+          path: backtest_output/
+          retention-days: 90
+      - name: Display report
+        if: always()
+        run: cat backtest_output/REPORT.md >> "$GITHUB_STEP_SUMMARY"
